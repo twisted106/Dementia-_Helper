@@ -113,18 +113,18 @@ Return ONLY valid JSON: {"name": string | null, "relation": string | null}`,
 
             // Strict name sanitization
             let cleanName: string | null = null;
-            if (parsed.name && typeof parsed.name === "string") {
+            if (typeof parsed.name === "string" && parsed.name.trim().length > 0) {
               const words = parsed.name.trim().split(/\s+/).filter((w: string) => /^[A-Za-z]+$/.test(w));
               if (words.length >= 1 && words.length <= 3) {
-                cleanName = words.map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+                cleanName = words.map((w: string) => String(w).charAt(0).toUpperCase() + String(w).slice(1).toLowerCase()).join(" ");
               }
             }
 
             let cleanRelation: string | null = null;
-            if (parsed.relation && typeof parsed.relation === "string") {
-              const relWord = parsed.relation.trim().split(/\s+/).filter((w: string) => /^[A-Za-z]+$/.test(w));
-              if (relWord.length >= 1 && relWord.length <= 2) {
-                cleanRelation = relWord.map((w: string) => w.charAt(0).toUpperCase() + relWord.slice(1).toLowerCase()).join(" ");
+            if (typeof parsed.relation === "string" && parsed.relation.trim().length > 0) {
+              const relWords = parsed.relation.trim().split(/\s+/).filter((w: string) => /^[A-Za-z]+$/.test(w));
+              if (relWords.length >= 1 && relWords.length <= 2) {
+                cleanRelation = relWords.map((w: string) => String(w).charAt(0).toUpperCase() + String(w).slice(1).toLowerCase()).join(" ");
               }
             }
 
@@ -138,40 +138,73 @@ Return ONLY valid JSON: {"name": string | null, "relation": string | null}`,
           return;
         }
 
-        // POST /api/speak (OpenAI High-Quality TTS)
+        // POST /api/speak (Ultra-Realistic Neural TTS via Deepgram Aura & OpenAI)
         if (req.url === "/api/speak" && req.method === "POST") {
           try {
             const { text } = await readBody(req);
-            const apiKey = process.env.OPENAI_API_KEY;
-            if (!apiKey || !text) {
+            if (!text || text.trim().length === 0) {
               res.statusCode = 400;
-              res.end(JSON.stringify({ error: "Missing text or API key" }));
+              res.end(JSON.stringify({ error: "Missing text" }));
               return;
             }
 
-            const response = await fetch("https://api.openai.com/v1/audio/speech", {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${apiKey}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                model: "tts-1",
-                voice: "alloy",
-                input: text,
-                speed: 0.95,
-              }),
-            });
+            const dgKey = process.env.DEEPGRAM_API_KEY;
+            const openAiKey = process.env.OPENAI_API_KEY;
 
-            if (!response.ok) {
-              res.statusCode = response.status;
-              res.end(JSON.stringify({ error: "TTS generation failed" }));
-              return;
+            // 1. Primary: Deepgram Aura (Ultra-realistic, soothing, mellow human voice)
+            if (dgKey) {
+              try {
+                // Models: aura-luna-en (mellow, calm female) or aura-orion-en (calm, warm male)
+                const dgRes = await fetch("https://api.deepgram.com/v1/speak?model=aura-luna-en", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Token ${dgKey}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({ text }),
+                });
+
+                if (dgRes.ok) {
+                  const arrayBuffer = await dgRes.arrayBuffer();
+                  res.setHeader("Content-Type", "audio/mpeg");
+                  res.end(Buffer.from(arrayBuffer));
+                  return;
+                }
+              } catch (dgErr: any) {
+                console.warn("[API] Deepgram Aura TTS failed, trying fallback:", dgErr?.message);
+              }
             }
 
-            const arrayBuffer = await response.arrayBuffer();
-            res.setHeader("Content-Type", "audio/mpeg");
-            res.end(Buffer.from(arrayBuffer));
+            // 2. Fallback: OpenAI TTS
+            if (openAiKey) {
+              try {
+                const openAiRes = await fetch("https://api.openai.com/v1/audio/speech", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${openAiKey}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    model: "tts-1",
+                    voice: "onyx",
+                    input: text,
+                    speed: 0.90,
+                  }),
+                });
+
+                if (openAiRes.ok) {
+                  const arrayBuffer = await openAiRes.arrayBuffer();
+                  res.setHeader("Content-Type", "audio/mpeg");
+                  res.end(Buffer.from(arrayBuffer));
+                  return;
+                }
+              } catch (oaErr: any) {
+                console.warn("[API] OpenAI TTS failed:", oaErr?.message);
+              }
+            }
+
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: "All TTS providers failed" }));
           } catch (err: any) {
             console.error("[API] TTS error:", err?.message);
             res.statusCode = 500;

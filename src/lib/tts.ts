@@ -8,20 +8,29 @@
 
 let currentAudio: HTMLAudioElement | null = null;
 let isAudioUnlocked = false;
+let cachedVoices: SpeechSynthesisVoice[] = [];
 
-// Unlock audio context on first user interaction
-if (typeof window !== "undefined") {
+// Initialize & cache voices
+if (typeof window !== "undefined" && "speechSynthesis" in window) {
+  const loadVoices = () => {
+    try {
+      cachedVoices = window.speechSynthesis.getVoices();
+    } catch {}
+  };
+  loadVoices();
+  window.speechSynthesis.onvoiceschanged = loadVoices;
+
+  // Unlock audio on ANY user click/touch/keypress
   const unlockAudio = () => {
     if (isAudioUnlocked) return;
     isAudioUnlocked = true;
 
-    // Wake up Web Speech API
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.getVoices();
-      const dummy = new SpeechSynthesisUtterance("");
-      dummy.volume = 0;
+    try {
+      window.speechSynthesis.resume();
+      const dummy = new SpeechSynthesisUtterance(" ");
+      dummy.volume = 0.01;
       window.speechSynthesis.speak(dummy);
-    }
+    } catch {}
 
     window.removeEventListener("click", unlockAudio);
     window.removeEventListener("touchstart", unlockAudio);
@@ -32,6 +41,15 @@ if (typeof window !== "undefined") {
   window.addEventListener("touchstart", unlockAudio);
   window.addEventListener("keydown", unlockAudio);
 }
+
+export const unlockAudioContext = () => {
+  isAudioUnlocked = true;
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.resume();
+    } catch {}
+  }
+};
 
 export const speakMemoryContext = async (
   name: string,
@@ -88,21 +106,25 @@ export const speakMemoryContext = async (
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     try {
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(spokenText);
-      utterance.rate = 0.92; // Gentle pacing
-      utterance.pitch = 1.0;
-      utterance.volume = 0.95;
+      window.speechSynthesis.resume();
 
-      const voices = window.speechSynthesis.getVoices();
+      const utterance = new SpeechSynthesisUtterance(spokenText);
+      utterance.rate = 0.88; // Relaxed, gentle human cadence
+      utterance.pitch = 0.90; // Mellow, warm lower resonance
+      utterance.volume = 0.85; // Comfortable, soft listening level
+
+      const voices = cachedVoices.length > 0 ? cachedVoices : window.speechSynthesis.getVoices();
       const naturalVoice = voices.find(
         (v) =>
           v.lang.startsWith("en") &&
           (v.name.includes("Natural") ||
+            v.name.includes("Ryan") ||
+            v.name.includes("Guy") ||
             v.name.includes("Google") ||
-            v.name.includes("Samantha") ||
-            v.name.includes("Karen") ||
             v.name.includes("Daniel") ||
-            v.name.includes("Alex"))
+            v.name.includes("Samantha") ||
+            v.name.includes("Alex") ||
+            v.name.includes("David"))
       );
       if (naturalVoice) utterance.voice = naturalVoice;
 
@@ -125,7 +147,7 @@ export const speakMemoryContext = async (
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
       currentAudio = audio;
-      audio.volume = 0.95;
+      audio.volume = 1.0;
 
       audio.onended = () => {
         URL.revokeObjectURL(audioUrl);
@@ -136,16 +158,16 @@ export const speakMemoryContext = async (
         await audio.play();
         return;
       } catch (playErr) {
-        console.warn("[TTS] Audio.play blocked or failed, using SpeechSynthesis fallback:", playErr);
+        console.warn("[TTS] Audio element play failed (autoplay restriction), falling back to SpeechSynthesis:", playErr);
         fallbackToSpeechSynthesis();
         return;
       }
     } else {
-      console.warn("[TTS] Server returned non-200, using SpeechSynthesis fallback");
+      console.warn("[TTS] Server TTS returned status", response.status, "falling back to SpeechSynthesis");
       fallbackToSpeechSynthesis();
     }
   } catch (err) {
-    console.warn("[TTS] Server TTS fetch failed, using SpeechSynthesis fallback:", err);
+    console.warn("[TTS] Server TTS fetch failed, falling back to SpeechSynthesis:", err);
     fallbackToSpeechSynthesis();
   }
 };

@@ -5,11 +5,11 @@ import LiveSubtitles from "@/components/LiveSubtitles";
 import { useToast } from "@/hooks/use-toast";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 import { summarizeTranscript, extractIdentityFromSpeech } from "@/lib/groq";
-import { speakMemoryContext } from "@/lib/tts";
+import { speakMemoryContext, unlockAudioContext } from "@/lib/tts";
 import { 
   searchFaceInDatabase, 
   saveOrUpdateProfile, 
-  updateProfileSummary,
+  updateProfileSummary, 
   updateProfileRelation, 
   MatchedProfile 
 } from "@/lib/supabase";
@@ -29,7 +29,9 @@ const Index = () => {
   const activeProfileRef = useRef<MatchedProfile | null>(null);
   const isQueryingDbRef = useRef(false);
   const lastQueryTimeRef = useRef(0);
-  const spokenInCurrentVisitRef = useRef<Set<string>>(new Set());
+  
+  // Track who was announced in this current camera session
+  const sessionAnnouncedMapRef = useRef<Map<string, number>>(new Map());
   
   // Timers & State Tracking
   const faceAbsenceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -53,7 +55,20 @@ const Index = () => {
     }
   }, [speech.isSupported]);
 
-  // Silent Background Summarizer (updates memory card box without intrusive popups)
+  // Unlock audio on any click in window
+  useEffect(() => {
+    const handleInteraction = () => {
+      unlockAudioContext();
+    };
+    window.addEventListener("click", handleInteraction, { once: true });
+    window.addEventListener("touchstart", handleInteraction, { once: true });
+    return () => {
+      window.removeEventListener("click", handleInteraction);
+      window.removeEventListener("touchstart", handleInteraction);
+    };
+  }, []);
+
+  // Silent Background Summarizer
   const runSummarization = useCallback(async (profileName: string, transcript: string) => {
     const textToSummarize = transcript.trim();
     if (!textToSummarize || textToSummarize === lastSummarizedTranscriptRef.current || textToSummarize.length < 20) {
@@ -96,7 +111,6 @@ const Index = () => {
             runSummarization(departingProfile.name, transcriptToSummarize);
             const personKey = departingProfile.id || departingProfile.name;
             localStorage.setItem(`left_${personKey}`, String(Date.now()));
-            spokenInCurrentVisitRef.current.delete(personKey);
           }
 
           setActiveProfile(null);
@@ -131,14 +145,18 @@ const Index = () => {
 
       if (matched) {
         const personKey = matched.id || matched.name;
+        const lastAnnouncedTime = sessionAnnouncedMapRef.current.get(personKey) || 0;
         const lastLeftTimestamp = Number(localStorage.getItem(`left_${personKey}`) || 0);
-        const timeAway = lastLeftTimestamp > 0 ? (now - lastLeftTimestamp) : Infinity;
-        const hasSpokenThisVisit = spokenInCurrentVisitRef.current.has(personKey);
 
-        // Speak when person enters for the first time OR if absent for 30+ minutes
-        if (!hasSpokenThisVisit && timeAway >= THIRTY_MINUTES_MS) {
-          console.log(`[Audio Memory] Person ${matched.name} entered (away ${timeAway === Infinity ? "first time" : Math.round(timeAway / 60000) + "m"}). Triggering whisper...`);
-          spokenInCurrentVisitRef.current.add(personKey);
+        // Conditions to speak:
+        // 1. First time seeing this person in this camera session (lastAnnouncedTime === 0)
+        // 2. Person was out of frame for 30+ minutes (now - lastLeftTimestamp >= 30m)
+        const isFirstTimeInSession = lastAnnouncedTime === 0;
+        const wasAwayFor30Minutes = lastLeftTimestamp > 0 && (now - lastLeftTimestamp >= THIRTY_MINUTES_MS);
+
+        if (isFirstTimeInSession || wasAwayFor30Minutes) {
+          console.log(`[Audio Memory] Announcing ${matched.name} (first-in-session: ${isFirstTimeInSession}, away-30m: ${wasAwayFor30Minutes})`);
+          sessionAnnouncedMapRef.current.set(personKey, now);
           speakMemoryContext(matched.name, matched.relation, matched.last_summary);
         }
 
@@ -267,6 +285,11 @@ const Index = () => {
           );
           if (savedProfile) {
             setActiveProfile(savedProfile);
+            const personKey = savedProfile.id || savedProfile.name;
+            if (!sessionAnnouncedMapRef.current.has(personKey)) {
+              sessionAnnouncedMapRef.current.set(personKey, Date.now());
+              speakMemoryContext(savedProfile.name, savedProfile.relation, savedProfile.last_summary);
+            }
             toast({
               title: "Identity Saved",
               description: `${newName} (${finalRelation}) is now recorded.`,
