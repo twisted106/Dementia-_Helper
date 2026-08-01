@@ -55,14 +55,14 @@ const VisionLayer = ({ onFaceDetected }: VisionLayerProps) => {
       if (detections) {
         const resizedDetections = faceapi.resizeResults(detections, displaySize);
         
-        // Ultra-subtle, warm soft focus frame (calm & non-distracting)
+        // Ethereal, translucent white glass frame (pure monochrome & non-distracting)
         if (ctx) {
           const { x, y, width, height } = resizedDetections.detection.box;
-          const radius = 12;
+          const radius = 16;
           
           ctx.beginPath();
-          ctx.strokeStyle = "rgba(243, 168, 59, 0.35)"; // Soft warm amber
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+          ctx.lineWidth = 1.5;
           ctx.roundRect(x, y, width, height, radius);
           ctx.stroke();
         }
@@ -109,18 +109,18 @@ const VisionLayer = ({ onFaceDetected }: VisionLayerProps) => {
         </div>
       ) : (
         <div className="flex h-full w-full flex-col items-center justify-center bg-background p-6">
-          <CameraOff className="mb-4 h-12 w-12 text-muted-foreground/30" />
-          <p className="text-sm font-medium text-muted-foreground/60">
+          <CameraOff className="mb-4 h-12 w-12 text-white/20" />
+          <p className="text-sm font-medium text-white/40">
             {error || "Camera feed unavailable"}
           </p>
         </div>
       )}
-      {/* Soft warm vignette */}
+      {/* Neutral dark vignette */}
       <div
         className="pointer-events-none absolute inset-0 z-10"
         style={{
           background:
-            "radial-gradient(ellipse at center, transparent 60%, rgba(26, 22, 20, 0.45) 100%)",
+            "radial-gradient(ellipse at center, transparent 65%, rgba(0, 0, 0, 0.5) 100%)",
         }}
       />
     </div>

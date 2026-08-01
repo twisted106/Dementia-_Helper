@@ -72,12 +72,37 @@ export const createProfile = async (profile: NewProfileInput): Promise<MatchedPr
 };
 
 export const updateProfileSummary = async (nameOrId: string, summary: string) => {
-  const query = nameOrId.includes('-') 
-    ? supabase.from('profiles').update({ last_summary: summary }).eq('id', nameOrId)
-    : supabase.from('profiles').update({ last_summary: summary }).eq('name', nameOrId);
-  const { error } = await query;
-  if (error) {
-    console.error("Error updating profile summary:", error);
+  try {
+    if (!nameOrId || !summary) return;
+    
+    // If it looks like a UUID or contains a hyphen, try by ID first
+    if (nameOrId.includes('-')) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({ last_summary: summary })
+        .eq('id', nameOrId)
+        .select('id, name, last_summary');
+      
+      if (!error && data && data.length > 0) {
+        console.log(`[Supabase] Summary saved for ID ${nameOrId}:`, summary);
+        return;
+      }
+    }
+
+    // Try by name
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ last_summary: summary })
+      .eq('name', nameOrId)
+      .select('id, name, last_summary');
+      
+    if (error) {
+      console.error("[Supabase] Error updating profile summary:", error);
+    } else {
+      console.log(`[Supabase] Summary saved for ${nameOrId}:`, summary);
+    }
+  } catch (err) {
+    console.error("[Supabase] Failed to update profile summary:", err);
   }
 };
 

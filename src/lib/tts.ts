@@ -109,12 +109,17 @@ export const speakMemoryContext = async (
       window.speechSynthesis.resume();
 
       const utterance = new SpeechSynthesisUtterance(spokenText);
-      utterance.rate = 0.88; // Relaxed, gentle human cadence
+      utterance.rate = 0.80; // Slower, unhurried pacing for elderly listeners
       utterance.pitch = 0.90; // Mellow, warm lower resonance
-      utterance.volume = 0.85; // Comfortable, soft listening level
+      utterance.volume = 0.95; // Clear, comfortable listening level
 
       const voices = cachedVoices.length > 0 ? cachedVoices : window.speechSynthesis.getVoices();
-      const naturalVoice = voices.find(
+      
+      // 1. Try to find a native Indian voice for flawless pronunciation of Indian names
+      const indianVoice = voices.find(v => v.lang === "en-IN" || v.lang === "hi-IN" || v.name.includes("India"));
+      
+      // 2. Fallback to generic high-quality natural voices
+      const naturalVoice = indianVoice || voices.find(
         (v) =>
           v.lang.startsWith("en") &&
           (v.name.includes("Natural") ||
@@ -134,6 +139,16 @@ export const speakMemoryContext = async (
     }
   };
 
+  // Pre-check for Indian voice to bypass cloud TTS and get native pronunciation
+  const voices = cachedVoices.length > 0 ? cachedVoices : (typeof window !== "undefined" && window.speechSynthesis ? window.speechSynthesis.getVoices() : []);
+  const hasNativeIndianVoice = voices.some(v => v.lang === "en-IN" || v.lang === "hi-IN" || v.name.includes("India"));
+
+  if (hasNativeIndianVoice) {
+    console.log("[TTS] Native Indian voice found! Bypassing cloud TTS for perfect pronunciation.");
+    fallbackToSpeechSynthesis();
+    return;
+  }
+
   // Try backend proxy OpenAI TTS
   try {
     const response = await fetch("/api/speak", {
@@ -147,6 +162,7 @@ export const speakMemoryContext = async (
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
       currentAudio = audio;
+      audio.playbackRate = 0.82; // Slower, unhurried speech for elderly listeners
       audio.volume = 1.0;
 
       audio.onended = () => {

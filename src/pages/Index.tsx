@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import VisionLayer from "@/components/VisionLayer";
 import MemoryCard from "@/components/MemoryCard";
 import LiveSubtitles from "@/components/LiveSubtitles";
+import RegisterPersonModal from "@/components/RegisterPersonModal";
 import { useToast } from "@/hooks/use-toast";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 import { summarizeTranscript, extractIdentityFromSpeech } from "@/lib/groq";
@@ -13,7 +14,7 @@ import {
   updateProfileRelation, 
   MatchedProfile 
 } from "@/lib/supabase";
-import { Mic, MicOff, Volume2 } from "lucide-react";
+import { Mic, MicOff, Volume2, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
@@ -23,7 +24,12 @@ const Index = () => {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [currentSummary, setCurrentSummary] = useState<string | null>(null);
   const [showCard, setShowCard] = useState(false);
+  const [isRegisterOpen, setIsRegisterOpen] = useState(false);
+  const [hasFaceInSight, setHasFaceInSight] = useState(false);
 
+  // Core detection references
+  const hasEverSpokenInThisSessionRef = useRef<Set<string>>(new Set());
+  
   // Live References
   const currentFaceDescriptorRef = useRef<Float32Array | null>(null);
   const activeProfileRef = useRef<MatchedProfile | null>(null);
@@ -68,26 +74,36 @@ const Index = () => {
     };
   }, []);
 
-  // Silent Background Summarizer
-  const runSummarization = useCallback(async (profileName: string, transcript: string) => {
+  // Robust Real-Time Summarizer
+  const runSummarization = useCallback(async (profileName: string, transcript: string, profileId?: string) => {
     const textToSummarize = transcript.trim();
-    if (!textToSummarize || textToSummarize === lastSummarizedTranscriptRef.current || textToSummarize.length < 20) {
+    if (!textToSummarize || textToSummarize === lastSummarizedTranscriptRef.current || textToSummarize.length < 8) {
       return;
     }
 
     lastSummarizedTranscriptRef.current = textToSummarize;
     setIsSummarizing(true);
-    console.log(`[Auto-Summarizer] Summarizing conversation for ${profileName}...`);
+    console.log(`[Auto-Summarizer] Summarizing conversation for ${profileName || "Person"} (ID: ${profileId})...`);
 
     try {
       const summary = await summarizeTranscript(textToSummarize);
       console.log(`[Auto-Summarizer] Memory generated:`, summary);
 
-      setCurrentSummary(summary);
-      setActiveProfile((prev) => prev ? { ...prev, last_summary: summary } : null);
+      if (summary) {
+        setCurrentSummary(summary);
+        setActiveProfile((prev) => prev ? { ...prev, last_summary: summary } : null);
 
-      if (activeProfileRef.current?.id || activeProfileRef.current?.name) {
-        await updateProfileSummary(activeProfileRef.current.id || activeProfileRef.current.name, summary);
+        toast({
+          title: "Memory Updated",
+          description: summary.length > 50 ? summary.substring(0, 50) + "..." : summary,
+        });
+
+        const targetId = profileId || activeProfileRef.current?.id;
+        const targetName = profileName || activeProfileRef.current?.name;
+
+        if (targetId || targetName) {
+          await updateProfileSummary(targetId || targetName!, summary);
+        }
       }
     } catch (err) {
       console.error("Auto-summarization failed:", err);
@@ -100,17 +116,23 @@ const Index = () => {
   const handleFaceDetected = useCallback(async (descriptor: Float32Array | null) => {
     if (!descriptor) {
       currentFaceDescriptorRef.current = null;
+      setHasFaceInSight(false);
 
-      // Person walked out of camera frame (> 2.5s absence)
+      // Person walked out of camera frame (> 2.0s absence)
       if (activeProfileRef.current && !faceAbsenceTimerRef.current) {
-        faceAbsenceTimerRef.current = setTimeout(() => {
-          const departingProfile = activeProfileRef.current;
-          const transcriptToSummarize = currentConversationTranscriptRef.current;
+        const departingProfile = activeProfileRef.current;
+        const transcriptToSummarize = currentConversationTranscriptRef.current;
 
-          if (departingProfile) {
-            runSummarization(departingProfile.name, transcriptToSummarize);
+        faceAbsenceTimerRef.current = setTimeout(async () => {
+          if (departingProfile && transcriptToSummarize.length >= 8) {
+            await runSummarization(departingProfile.name, transcriptToSummarize, departingProfile.id);
             const personKey = departingProfile.id || departingProfile.name;
             localStorage.setItem(`left_${personKey}`, String(Date.now()));
+            sessionAnnouncedMapRef.current.delete(personKey);
+          } else if (departingProfile) {
+            const personKey = departingProfile.id || departingProfile.name;
+            localStorage.setItem(`left_${personKey}`, String(Date.now()));
+            sessionAnnouncedMapRef.current.delete(personKey);
           }
 
           setActiveProfile(null);
@@ -118,13 +140,14 @@ const Index = () => {
           currentConversationTranscriptRef.current = "";
           lastSummarizedTranscriptRef.current = "";
           faceAbsenceTimerRef.current = null;
-        }, 2500);
+        }, 2000);
       }
       return;
     }
 
     // Face is in frame
     currentFaceDescriptorRef.current = descriptor;
+    setHasFaceInSight(true);
 
     if (faceAbsenceTimerRef.current) {
       clearTimeout(faceAbsenceTimerRef.current);
@@ -145,18 +168,17 @@ const Index = () => {
 
       if (matched) {
         const personKey = matched.id || matched.name;
-        const lastAnnouncedTime = sessionAnnouncedMapRef.current.get(personKey) || 0;
         const lastLeftTimestamp = Number(localStorage.getItem(`left_${personKey}`) || 0);
+        const timeAway = lastLeftTimestamp > 0 ? (now - lastLeftTimestamp) : Infinity;
+        const hasSpokenThisVisit = sessionAnnouncedMapRef.current.has(personKey);
+        const isFirstTimeSincePageLoad = !hasEverSpokenInThisSessionRef.current.has(personKey);
 
-        // Conditions to speak:
-        // 1. First time seeing this person in this camera session (lastAnnouncedTime === 0)
-        // 2. Person was out of frame for 30+ minutes (now - lastLeftTimestamp >= 30m)
-        const isFirstTimeInSession = lastAnnouncedTime === 0;
-        const wasAwayFor30Minutes = lastLeftTimestamp > 0 && (now - lastLeftTimestamp >= THIRTY_MINUTES_MS);
-
-        if (isFirstTimeInSession || wasAwayFor30Minutes) {
-          console.log(`[Audio Memory] Announcing ${matched.name} (first-in-session: ${isFirstTimeInSession}, away-30m: ${wasAwayFor30Minutes})`);
+        // Speak when person enters for the first time since page load OR if absent for 30+ minutes
+        // We MUST check !hasSpokenThisVisit to prevent an infinite loop while they remain in frame!
+        if (!hasSpokenThisVisit && (isFirstTimeSincePageLoad || timeAway >= THIRTY_MINUTES_MS)) {
+          console.log(`[Audio Memory] Person ${matched.name} entered (away ${timeAway === Infinity ? "first time" : Math.round(timeAway / 60000) + "m"}). Triggering whisper...`);
           sessionAnnouncedMapRef.current.set(personKey, now);
+          hasEverSpokenInThisSessionRef.current.add(personKey);
           speakMemoryContext(matched.name, matched.relation, matched.last_summary);
         }
 
@@ -191,15 +213,21 @@ const Index = () => {
 
     currentConversationTranscriptRef.current = fullTranscript;
 
-    // Condition 2: Person stops talking (Silence > 4.0s) -> Silent Auto-Summarize to Box
+    // Fast Responsive Silence Summarization (1.8s of silence after speech)
     if (speechSilenceTimerRef.current) {
       clearTimeout(speechSilenceTimerRef.current);
     }
     speechSilenceTimerRef.current = setTimeout(() => {
-      if (activeProfileRef.current && currentConversationTranscriptRef.current.length > 25) {
-        runSummarization(activeProfileRef.current.name, currentConversationTranscriptRef.current);
+      const text = currentConversationTranscriptRef.current.trim();
+      if (text.length >= 8) {
+        const currentProf = activeProfileRef.current;
+        runSummarization(
+          currentProf?.name || "Person",
+          text,
+          currentProf?.id
+        );
       }
-    }, 4000);
+    }, 1200);
 
     const activeSpeech = (speech.interimTranscript || speech.latestSentence || fullTranscript.slice(-80)).toLowerCase();
 
@@ -250,67 +278,80 @@ const Index = () => {
     }
 
     nameTriggerDebounceRef.current = setTimeout(async () => {
-      const sentenceToAnalyze = speech.latestSentence || activeSpeech;
-      const { name: newName, relation: newRelation } = await extractIdentityFromSpeech(sentenceToAnalyze);
+      // Prevent overlapping parallel extractions
+      if (isQueryingDbRef.current) return;
+      isQueryingDbRef.current = true;
 
-      if (newRelation && activeProfileRef.current?.relation !== newRelation) {
-        setActiveProfile((prev) => {
-          if (prev) return { ...prev, relation: newRelation };
-          return { name: "Person", relation: newRelation, last_summary: "First meeting." };
-        });
-        setShowCard(true);
+      try {
+        const sentenceToAnalyze = speech.latestSentence || activeSpeech;
+        const { name: newName, relation: newRelation } = await extractIdentityFromSpeech(sentenceToAnalyze);
 
-        if (activeProfileRef.current?.id || activeProfileRef.current?.name) {
-          updateProfileRelation(activeProfileRef.current.id || activeProfileRef.current.name, newRelation);
-        }
-      }
+        if (newRelation && activeProfileRef.current?.relation !== newRelation) {
+          setActiveProfile((prev) => {
+            if (prev) return { ...prev, relation: newRelation };
+            return { name: "Person", relation: newRelation, last_summary: "First meeting." };
+          });
+          setShowCard(true);
 
-      if (newName && currentFaceDescriptorRef.current) {
-        const finalRelation = newRelation || activeProfileRef.current?.relation || "Friend";
-
-        setActiveProfile((prev) => ({
-          id: prev?.id,
-          name: newName,
-          relation: finalRelation,
-          last_summary: prev?.last_summary || "First meeting recorded.",
-        }));
-        setShowCard(true);
-
-        try {
-          const savedProfile = await saveOrUpdateProfile(
-            activeProfileRef.current,
-            currentFaceDescriptorRef.current,
-            newName,
-            finalRelation
-          );
-          if (savedProfile) {
-            setActiveProfile(savedProfile);
-            const personKey = savedProfile.id || savedProfile.name;
-            if (!sessionAnnouncedMapRef.current.has(personKey)) {
-              sessionAnnouncedMapRef.current.set(personKey, Date.now());
-              speakMemoryContext(savedProfile.name, savedProfile.relation, savedProfile.last_summary);
-            }
-            toast({
-              title: "Identity Saved",
-              description: `${newName} (${finalRelation}) is now recorded.`,
-            });
+          if (activeProfileRef.current?.id || activeProfileRef.current?.name) {
+            updateProfileRelation(activeProfileRef.current.id || activeProfileRef.current.name, newRelation);
           }
-        } catch (err) {
-          console.error("Failed to update profile name:", err);
         }
+
+        if (newName && currentFaceDescriptorRef.current) {
+          const finalRelation = newRelation || activeProfileRef.current?.relation || "Friend";
+
+          setActiveProfile((prev) => ({
+            id: prev?.id,
+            name: newName,
+            relation: finalRelation,
+            last_summary: prev?.last_summary || "First meeting recorded.",
+          }));
+          setShowCard(true);
+
+          try {
+            const savedProfile = await saveOrUpdateProfile(
+              activeProfileRef.current,
+              currentFaceDescriptorRef.current,
+              newName,
+              finalRelation
+            );
+            if (savedProfile) {
+              setActiveProfile(savedProfile);
+              const personKey = savedProfile.id || savedProfile.name;
+              if (!sessionAnnouncedMapRef.current.has(personKey)) {
+                sessionAnnouncedMapRef.current.set(personKey, Date.now());
+                speakMemoryContext(savedProfile.name, savedProfile.relation, savedProfile.last_summary);
+              }
+              toast({
+                title: "Identity Saved",
+                description: `${newName} (${finalRelation}) is now recorded.`,
+              });
+
+              // Summarize any existing speech immediately for this newly identified profile
+              if (currentConversationTranscriptRef.current.length >= 8) {
+                runSummarization(savedProfile.name, currentConversationTranscriptRef.current, savedProfile.id);
+              }
+            }
+          } catch (err) {
+            console.error("Failed to update profile name:", err);
+          }
+        }
+      } finally {
+        isQueryingDbRef.current = false;
       }
-    }, 400);
+    }, 2500);
   }, [speech.transcript, speech.interimTranscript, speech.latestSentence, runSummarization, toast]);
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-background">
       <VisionLayer onFaceDetected={handleFaceDetected} />
 
-      {/* Frosted Glass Memory Card Plate */}
+      {/* Obsidian Black Glass Memory Card Plate with Pure White Text */}
       <MemoryCard
-        visible={showCard && !!activeProfile}
-        name={activeProfile?.name || ""}
-        relation={activeProfile?.relation || ""}
+        visible={showCard || isSummarizing || !!currentSummary || !!activeProfile}
+        name={activeProfile?.name || "Person in View"}
+        relation={activeProfile?.relation || "Active Conversation"}
         lastContext={currentSummary || activeProfile?.last_summary || "First conversation together."}
         summary={currentSummary}
         isSummarizing={isSummarizing}
@@ -325,7 +366,7 @@ const Index = () => {
         }}
       />
 
-      {/* Frosted Glass Live Speech-to-Text Plate */}
+      {/* Transparent White Frosted Glass Live Speech-to-Text Plate with Black Text */}
       <LiveSubtitles
         visible={true}
         transcript={speech.transcript}
@@ -334,8 +375,23 @@ const Index = () => {
         isSupported={speech.isSupported}
       />
 
-      {/* Frosted Glass Floating Mic & Audio Controls */}
-      <div className="pointer-events-auto fixed bottom-7 right-7 z-40 flex items-center gap-2.5">
+      {/* Obsidian Black Glassmorphic Floating Action Controls with Pure White Text */}
+      <div 
+        className="pointer-events-auto fixed bottom-7 right-7 z-40 flex items-center gap-2.5 text-white"
+        style={{ textShadow: "0 1px 3px rgba(0, 0, 0, 0.9)" }}
+      >
+        {/* Register / Enroll Person Trigger */}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setIsRegisterOpen(true)}
+          className="glass-button gap-2 rounded-2xl text-white hover:text-white text-xs font-bold px-3.5 py-2.5 shadow-md"
+          title="Register Person Face & Memory"
+        >
+          <UserPlus className="h-4 w-4 text-white" />
+          <span>Register Person</span>
+        </Button>
+
         {activeProfile?.name && (
           <Button
             size="sm"
@@ -347,10 +403,10 @@ const Index = () => {
                 currentSummary || activeProfile.last_summary
               );
             }}
-            className="glass-button gap-2 rounded-2xl text-amber-300 hover:text-amber-100 text-xs font-semibold px-3.5 py-2.5"
+            className="glass-button gap-2 rounded-2xl text-xs font-bold px-3.5 py-2.5 shadow-md"
             title="Hear Audio Memory Cue"
           >
-            <Volume2 className="h-4 w-4 text-amber-400" />
+            <Volume2 className="h-4 w-4" />
             <span>Hear Whisper</span>
           </Button>
         )}
@@ -365,16 +421,30 @@ const Index = () => {
               speech.start();
             }
           }}
-          className={`glass-button gap-2.5 rounded-2xl transition-all duration-300 text-xs font-semibold px-4 py-2.5 ${
+          className={`glass-button gap-2.5 rounded-2xl transition-all duration-300 text-xs font-bold px-4 py-2.5 ${
             speech.isListening 
-              ? "text-amber-300 shadow-[0_0_15px_rgba(245,166,35,0.2)]" 
-              : "text-muted-foreground hover:text-foreground"
+              ? "border-red-500/50 shadow-[0_0_12px_rgba(239,68,68,0.4)]" 
+              : "opacity-75 hover:opacity-100"
           }`}
         >
-          {speech.isListening ? <Mic className="h-4 w-4 text-amber-400" /> : <MicOff className="h-4 w-4 text-muted-foreground" />}
+          {speech.isListening ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4 opacity-50" />}
           {speech.isListening ? "Listening" : "Muted"}
         </Button>
       </div>
+
+      {/* Registration Modal: Black Glassmorphism with Pure White Text ONLY */}
+      <RegisterPersonModal
+        isOpen={isRegisterOpen}
+        onClose={() => setIsRegisterOpen(false)}
+        faceDescriptor={currentFaceDescriptorRef.current}
+        onRegistered={(profile) => {
+          setActiveProfile(profile);
+          setShowCard(true);
+          if (currentConversationTranscriptRef.current.length >= 8) {
+            runSummarization(profile.name, currentConversationTranscriptRef.current, profile.id);
+          }
+        }}
+      />
     </div>
   );
 };

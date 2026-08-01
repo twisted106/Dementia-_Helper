@@ -40,40 +40,57 @@ function apiServerPlugin(): PluginOption {
         if (req.url === "/api/summarize" && req.method === "POST") {
           try {
             const { transcript } = await readBody(req);
+            if (!transcript || !transcript.trim()) {
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ summary: "First conversation together." }));
+              return;
+            }
+
             const Groq = (await import("groq-sdk")).default;
             const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-            const response = await groq.chat.completions.create({
-              messages: [
-                {
-                  role: "system",
-                  content: `You are an AR cognitive memory assistant for smart glasses worn by someone needing memory assistance.
-Extract ONLY tangible, high-value, actionable memory points that genuinely count for the wearer:
+            const systemPrompt = `You are a memory processor for a dementia patient's smart glasses.
+The transcript provided is spoken BY the person standing in front of the camera, addressing the patient wearing the glasses.
+CRITICAL PRONOUN RULE: When summarizing, translate first-person pronouns ("I", "me", "my") to refer to the speaker in the third person (e.g. "They", "He", "She", "That person"). Refer to the patient wearing the glasses as "you". 
+Example: "I left my keys on your table." -> "They left their keys on your table."
+Your job is to read the transcript and extract ONLY tangible, high-value, actionable memory points (e.g. appointments, object locations, medication, names, tasks).
+Format as a brief, punchy, declarative sentence (e.g., "They placed the medication on the kitchen table.").
+If the conversation was purely conversational pleasantries with no key facts, summarize what was explicitly talked about in a short sentence (e.g. "They talked about the weather and how you are feeling today."). DO NOT output a generic static string.`;
 
-PRIORITIZE:
-1. Object Locations & Physical Cues: Where important items were placed or mentioned (e.g. "Keys placed on the kitchen counter", "Medicine in the top drawer", "Glasses on the nightstand").
-2. Actionable Plans & Commitments: Specific promises, appointments, or schedules (e.g. "Doctor appointment Friday at 10 AM", "She is bringing groceries tomorrow evening").
-3. Core Emotional Moments & Key Topics: Meaningful personal moments, family news, or specific stories discussed (e.g. "Talked about grandson Leo's soccer trophy", "He felt very proud of his new work").
-4. Caregiver Instructions: Health reminders or precautions mentioned.
+            let summary = "";
+            try {
+              const response = await groq.chat.completions.create({
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: transcript },
+                ],
+                model: "llama-3.3-70b-versatile",
+                temperature: 0.1,
+              });
+              summary = response.choices[0]?.message?.content?.trim() || "";
+            } catch (err70b: any) {
+              console.warn("[API] llama-3.3-70b-versatile failed, trying llama-3.1-8b-instant:", err70b?.message);
+              const fallbackResponse = await groq.chat.completions.create({
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: transcript },
+                ],
+                model: "llama-3.1-8b-instant",
+                temperature: 0.1,
+              });
+              summary = fallbackResponse.choices[0]?.message?.content?.trim() || "";
+            }
 
-STRICT RULES:
-- DO NOT output generic small-talk summaries (avoid "They exchanged greetings and asked how each other was doing").
-- Write 1 to 2 concise, reassuring, direct sentences (max 35 words).
-- If the conversation was purely conversational pleasantries with no key facts, output: "Shared a warm greeting and friendly check-in."`,
-                },
-                { role: "user", content: transcript },
-              ],
-              model: "llama-3.3-70b-versatile",
-              temperature: 0.1,
-            });
+            if (!summary) {
+              summary = "Shared a warm greeting and friendly check-in.";
+            }
 
-            const summary = response.choices[0]?.message?.content?.trim() || "Shared a warm greeting and friendly check-in.";
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ summary }));
           } catch (err: any) {
             console.error("[API] Summarize error:", err?.message);
             res.statusCode = 500;
-            res.end(JSON.stringify({ error: "Summarization failed" }));
+            res.end(JSON.stringify({ error: "Summarization failed", summary: "Shared a warm greeting and friendly check-in." }));
           }
           return;
         }
@@ -151,31 +168,7 @@ Return ONLY valid JSON: {"name": string | null, "relation": string | null}`,
             const dgKey = process.env.DEEPGRAM_API_KEY;
             const openAiKey = process.env.OPENAI_API_KEY;
 
-            // 1. Primary: Deepgram Aura (Ultra-realistic, soothing, mellow human voice)
-            if (dgKey) {
-              try {
-                // Models: aura-luna-en (mellow, calm female) or aura-orion-en (calm, warm male)
-                const dgRes = await fetch("https://api.deepgram.com/v1/speak?model=aura-luna-en", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Token ${dgKey}`,
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({ text }),
-                });
-
-                if (dgRes.ok) {
-                  const arrayBuffer = await dgRes.arrayBuffer();
-                  res.setHeader("Content-Type", "audio/mpeg");
-                  res.end(Buffer.from(arrayBuffer));
-                  return;
-                }
-              } catch (dgErr: any) {
-                console.warn("[API] Deepgram Aura TTS failed, trying fallback:", dgErr?.message);
-              }
-            }
-
-            // 2. Fallback: OpenAI TTS
+            // 1. Primary: OpenAI TTS (Superior phonetic handling for names like 'Anil')
             if (openAiKey) {
               try {
                 const openAiRes = await fetch("https://api.openai.com/v1/audio/speech", {
@@ -200,6 +193,29 @@ Return ONLY valid JSON: {"name": string | null, "relation": string | null}`,
                 }
               } catch (oaErr: any) {
                 console.warn("[API] OpenAI TTS failed:", oaErr?.message);
+              }
+            }
+
+            // 2. Fallback: Deepgram Aura
+            if (dgKey) {
+              try {
+                const dgRes = await fetch("https://api.deepgram.com/v1/speak?model=aura-luna-en", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Token ${dgKey}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({ text }),
+                });
+
+                if (dgRes.ok) {
+                  const arrayBuffer = await dgRes.arrayBuffer();
+                  res.setHeader("Content-Type", "audio/mpeg");
+                  res.end(Buffer.from(arrayBuffer));
+                  return;
+                }
+              } catch (dgErr: any) {
+                console.warn("[API] Deepgram Aura TTS failed, trying fallback:", dgErr?.message);
               }
             }
 

@@ -31,53 +31,60 @@ const LiveSubtitles = ({
 
   return (
     <div className="animate-glass-in pointer-events-none fixed bottom-7 left-1/2 z-30 w-[92%] max-w-2xl -translate-x-1/2 md:bottom-9">
-      <div className="glass-panel rounded-3xl px-6 py-5 transition-all duration-300">
+      {/* Glassmorphic Panel with Inherited Dark Text */}
+      <div 
+        className="glass-panel rounded-3xl px-6 py-5 transition-all duration-300"
+      >
         {/* Header Bar */}
         <div className="mb-2.5 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className={`flex h-7 w-7 items-center justify-center rounded-xl glass-inner ${isListening ? "text-amber-300" : "text-muted-foreground"}`}>
+            <div className={`flex h-7 w-7 items-center justify-center rounded-xl glass-inner ${isListening ? "opacity-100" : "opacity-50"}`}>
               {isListening ? (
                 <Mic className="h-4 w-4" />
               ) : (
-                <MicOff className="h-4 w-4" />
+                <MicOff className="h-4 w-4 opacity-50" />
               )}
             </div>
-            <span className="text-xs font-semibold text-muted-foreground/90 tracking-wide">
-              {!isSupported
-                ? "Microphone not supported"
-                : isListening
-                ? "Live Speech Transcription"
-                : "Microphone Paused"}
+            <span 
+              className="text-xs font-bold opacity-90 tracking-wide"
+            >
+              Live Subtitles
             </span>
           </div>
 
-          {isListening && (
-            <div className="glass-pill-amber flex items-center gap-1.5 rounded-full px-2.5 py-1">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(245,166,35,0.8)]" />
-              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200">
-                Live
+          <div className="flex items-center gap-2">
+            {isProcessing && (
+              <span className="flex h-2 w-2 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-500 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
               </span>
-            </div>
-          )}
+            )}
+            <span 
+              className="text-[10px] font-semibold uppercase tracking-wider opacity-60"
+            >
+              {isSupported ? (isListening ? "Active" : "Paused") : "Not Supported"}
+            </span>
+          </div>
         </div>
 
         {/* Written Subtitles Area */}
         <div 
           ref={containerRef}
-          className="max-h-28 overflow-y-auto pr-1 text-base leading-relaxed text-foreground font-medium scroll-smooth md:text-lg drop-shadow-sm"
+          className="relative max-h-[140px] min-h-[60px] overflow-y-auto pr-2 scroll-smooth"
+          style={{ scrollbarWidth: "none" }}
         >
           {hasContent || isProcessing ? (
             <>
-              <span>{transcript}</span>
+              <span className="font-medium">{transcript}</span>
               {transcript && interimTranscript ? " " : ""}
-              <span className="text-amber-300 font-semibold">{interimTranscript}</span>
+              <span className="font-bold underline decoration-slate-900/40">{interimTranscript}</span>
               {isListening && (
-                <span className="ml-1 inline-block h-4 w-0.5 bg-amber-300 align-middle animate-pulse" />
+                <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-slate-900/70" />
               )}
             </>
           ) : (
-            <span className="text-muted-foreground/60 italic text-sm">
-              {isListening ? "Listening continuously... speak anytime" : "Microphone is muted"}
+            <span className="opacity-50 italic">
+              {isListening ? "Listening for speech..." : "Microphone is muted"}
             </span>
           )}
         </div>
